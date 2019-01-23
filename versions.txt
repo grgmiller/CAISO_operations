@@ -1,0 +1,16 @@
+Date		Version		Description of updates
+12/18/18	1.0		First attempt, set up to scrape dynamically loaded data every 5 minutes
+12/19/18	a2.0		Partial reworking of v1.0 by Jake Highleyman, tightened up code
+12/26/18	a3.0.1		Abandoned a2.0 in favor of an approach to scrape csv files of historical data from CAISO site. Created code framework
+12/28/18	a3.0.2		Completed file download function. 
+1/1/19		3.0		Finished version 3.0 without bugs
+1/2/19		3.0.1		Edited command line message formatting, changed find null function to only find nulls in curtailment columns
+1/6/19		3.0.2		Optimized dataframe file sizes
+				> reduced df_dataFile dataframe size by 82% (from 25.13MB to 4.65MB) upon reading by optimizing dtypes
+				> reduced curtail_read dataframe size by 84% (from 2.39MB to 0.38MB) upon reading by optimizing dtypes
+				Implemented pathlib.Path for all file references
+				Implemented shelve for persistent variables
+				Removed global references
+				Remove unnecessary time.sleeps()
+1/21/19		3.0.3		Fixed chained indexing error / SettingWithCopyWarning in fillMissingCurtail() function, updated object dtypes to category when reading csv
+		
