@@ -1,14 +1,14 @@
 
 #   Developed by Greg Miller, grmiller@ucdavis.edu
-#   Version 3.03
-#   Last Updated January 21, 2019
+#   Version 3.04
+#   Last Updated August 5, 2019
 
 #   Purpose: To compile publicly-available CAISO system-wide electricity demand, supply, and emissions data into a csv file
 #   Currently configured to coninue downloading data until the most recent data has been downloaded.
 
 #   All directories and files will be created the first time you run the script
 #   Run in unbuffered mode to make sure time.sleep() works: $ python -u 
-
+#%%
 from bs4 import BeautifulSoup
 import csv
 from datetime import datetime, timedelta
@@ -28,6 +28,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC 
 from selenium.common.exceptions import ElementNotVisibleException
 from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.common.action_chains import ActionChains
 import shelve
 import sys
 import time
@@ -42,13 +43,13 @@ curtailURL = "http://www.caiso.com/informed/Pages/ManagingOversupply.aspx#dailyC
 downloads = Path.cwd() / 'downloads'
 curtailments = Path.cwd() / 'curtailments'
 dataFile = Path.cwd() / "outputs/CAISOdata.csv"
-dataFile_dtypes = {'date': 'category', 'month': 'uint8', 'day': 'uint8', 'weekday': 'uint8', 'hour': 'uint8', 'interval': 'uint8', \
-'5min_ending': 'category', 'demand_DayAF': 'uint16', 'demand_HourAF': 'uint16', 'demand_actual': 'uint16', 'demand_net': 'uint16', \
+dataFile_dtypes = {'month': 'uint8', 'day': 'uint8', 'weekday': 'uint8', 'hour': 'uint8', 'interval': 'uint8', \
+'demand_DayAF': 'uint16', 'demand_HourAF': 'uint16', 'demand_actual': 'uint16', 'demand_net': 'uint16', \
 'wind_curtail_MW': 'float32', 'solar_curtail_MW': 'float32', 'solar_MW': 'uint16', 'wind_MW': 'uint16', 'geothermal_MW': 'uint16', \
 'biomass_MW': 'uint16', 'biogas_MW': 'uint16', 'sm_hydro_MW': 'uint16', 'battery_MW': 'int8', 'renewable_MW': 'uint16', 'natgas_MW': \
 'uint16', 'lg_hydro_MW': 'uint16', 'imports_MW': 'int16', 'nuclear_MW': 'uint16', 'coal_MW': 'uint8', 'other_MW': 'uint8', 'imports_co2': \
 'int16', 'natgas_co2': 'uint16', 'biogas_co2': 'uint16', 'biomass_co2': 'uint8', 'geothermal_co2': 'uint8', 'coal_co2': 'uint8'}
-ct_dtypes = {'Date': 'category', 'Hour': 'uint8', 'Interval': 'uint8', 'Wind Curtailment': 'float32', 'Solar Curtailment': 'float32'}
+ct_dtypes = {'Hour': 'uint8', 'Interval': 'uint8', 'Wind Curtailment': 'float32', 'Solar Curtailment': 'float32'}
 shelf = Path.cwd() / 'shelf.db'
 
 def main():
@@ -69,7 +70,7 @@ def main():
             }
     user_initialized = 0 #track whether the start date is inputted by the user (1) or read from an existing output file (0)
     if not dataFile.exists():
-        with open(dataFile, 'w+'):
+        with open(dataFile, 'w+', newline=''):
             pass
         print('  New CSV output file created.\n  Please check the date dropdown menu for one of the charts at http://www.caiso.com/TodaysOutlook/Pages/default.aspx \n  and enter an available date to start data collection (formatted as "MM/DD/YYYY"):')
         latestDate = input('  >')
@@ -93,7 +94,7 @@ def main():
     count = 1
     end_i = time.time() #end initialization timer
     print('Initialization time = '+str(end_i-start_i)+' seconds') #timer 
-    downloadCurtailment(browser, user_initialized) #only needs to run once for each time the code runs
+    curtail_df = downloadCurtailment(browser, user_initialized) #only needs to run once for each time the code runs
     while latestDate_dt.date() < yesterday.date(): #continue downloading and appending data until the most recent data has been added
         start = time.time()
         tmpDelete('downloads')
@@ -101,7 +102,7 @@ def main():
         downloadSupply(browser, dataDate)
         downloadEmissions(browser, dataDate)
         dataQuality()
-        copyData(latestDate_dt)
+        copyData(latestDate_dt, curtail_df)
         latest = checkLatest()
         latestDate_dt = latest[0]
         dataDate = latest[1]
@@ -153,6 +154,12 @@ def downloadCurtailment(browser, user_initialized): #download curtailment data (
         prevPostDate = s['caiso']['postDate']
     if postDate==prevPostDate: #compare current and previous postdate
         print('  Latest curtailment data already downloaded.') #do nothing if they match; we already have the most current file
+        curtail_read = pd.read_csv(curtailments / 'curtailment_data.csv', dtype=ct_dtypes) #load the csv into a dataframe
+        curtail_read.columns = (['date','hour', 'interval','wind_curtail_MW','solar_curtail_MW']) #rename columns
+        ct_date = curtail_read['date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) #parse times from each row of data
+        curtail_read['date'] = ct_date.apply(lambda x: datetime.strftime(x, '%m/%d/%Y')) #set date for each row
+        curtail_read.astype({'date':str,'hour':'uint8','interval':'uint8'}, copy=False)
+        return curtail_read
     else: #download new curtailment file if more recent data is available
         tmpDelete('downloads') #clear downloads folder
         tmpDelete('curtailments') #delete existing file in curtailments folder
@@ -161,14 +168,12 @@ def downloadCurtailment(browser, user_initialized): #download curtailment data (
             print('  New curtailment data available!')
         print('  Downloading curtailment Excel file...')
         download_wait('downloads')         #wait for download to finish
-        with shelve.open(str(shelf), writeback=True) as s:
-            s['caiso']['postDate'] = postDate
         curtailFile = os.listdir(downloads)[0]
         os.rename(downloads / curtailFile, curtailments / curtailFile)  #move file to curtailments directory
         print('  Converting Excel file to CSV. This may take several minutes...')
         wb = openpyxl.load_workbook('curtailments/'+curtailFile) #this step takes a couple minutes to fully load
         sh = wb['Curtailments'] 
-        with open(curtailments / 'curtailment_data.csv', 'w', newline="") as f:  #convert xlsx to csv file for faster reading in future
+        with open(curtailments / 'curtailment_data.csv', 'w', newline='') as f:  #convert xlsx to csv file for faster reading in future
             c = csv.writer(f)
             for r in sh.rows:
                 if r[0].value is not None:
@@ -181,10 +186,15 @@ def downloadCurtailment(browser, user_initialized): #download curtailment data (
         curtail_read.columns = (['date','hour', 'interval','wind_curtail_MW','solar_curtail_MW']) #rename columns
         ct_dateList = curtail_read.date.tolist()
         ct_latestDate = ct_dateList[len(ct_dateList)-1] #find the date of the most recent data available
+        ct_date = curtail_read['date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) #parse times from each row of data
+        curtail_read['date'] = ct_date.apply(lambda x: datetime.strftime(x, '%m/%d/%Y')) #set date for each row
+        curtail_read.astype({'date':str,'hour':'uint8','interval':'uint8'}, copy=False)
         with shelve.open(str(shelf), writeback=True) as s:
+            s['caiso']['postDate'] = postDate
             s['caiso']['ct_latestDate'] = ct_latestDate
         if user_initialized==0: #if this is not the first time the program has been run, fill missing values from previous month in dataFile
             fillMissingCurtail(curtail_read)  
+        return curtail_read
 
 def tmpDelete(f): #delete any temporary files in folder (f)
     dirPath = Path.cwd() / f
@@ -199,8 +209,9 @@ def downloadDemand(browser, dataDate): #download demand data
     print('  Downloading demand data...')
     browser.get(demandURL) #open webdriver
     time.sleep(1) #wait for page to load
+    ActionChains(browser).move_to_element(browser.find_element_by_id('demand')).perform()
     browser.find_element(By.CSS_SELECTOR, '.form-control.date.demand-date').click() #click on date dropdown
-    time.sleep(1)
+    #time.sleep(1)
     while True:
         try: #try to find the date in the currently selected month
             browser.find_element(By.CSS_SELECTOR, "[data-date='{}']".format(dataDate)).click() #select date 
@@ -221,8 +232,9 @@ def downloadDemand(browser, dataDate): #download demand data
     download_wait('downloads')
     #download net demand data
     print('  Downloading net demand data...')
+    ActionChains(browser).move_to_element(browser.find_element_by_id('netDemand')).perform()
     browser.find_element(By.CSS_SELECTOR, '.form-control.date.net-demand-date').click() #click on date dropdown
-    time.sleep(1)
+    #time.sleep(1)
     while True:
         try:
             browser.find_element(By.CSS_SELECTOR, "[data-date='{}']".format(dataDate)).click() #select date 
@@ -243,8 +255,9 @@ def downloadSupply(browser, dataDate): #download csv files from supply page
     print('  Downloading supply data...')
     browser.get(supplyURL) #open webdriver
     time.sleep(1) #wiat for page to load
+    ActionChains(browser).move_to_element(browser.find_element_by_id('supplyTrend')).perform()
     browser.find_element(By.CSS_SELECTOR, '.form-control.date.supply-trend-date').click() #click on date dropdown
-    time.sleep(1)
+    #time.sleep(1)
     while True:
         try:
             browser.find_element(By.CSS_SELECTOR, "[data-date='{}']".format(dataDate)).click() #select date 
@@ -262,8 +275,9 @@ def downloadSupply(browser, dataDate): #download csv files from supply page
     download_wait('downloads')
     #download renewables data
     print('  Downloading renewables data...')
+    ActionChains(browser).move_to_element(browser.find_element_by_id('renewables')).perform()
     browser.find_element(By.CSS_SELECTOR, '.form-control.date.renewables-date').click() #click on date dropdown
-    time.sleep(1)
+    #time.sleep(1)
     while True:
         try:
             browser.find_element(By.CSS_SELECTOR, "[data-date='{}']".format(dataDate)).click() #select date 
@@ -284,8 +298,9 @@ def downloadEmissions(browser, dataDate): #download csv files from emissions pag
     print('  Downloading emissions data...')
     browser.get(emissionsURL) #open webdriver
     time.sleep(1) #wait for page to load
+    ActionChains(browser).move_to_element(browser.find_element_by_id('co2Breakdown')).perform()
     browser.find_element(By.CSS_SELECTOR, '.form-control.date.co2-breakdown-date').click() #click on date dropdown
-    time.sleep(1)
+    #time.sleep(1)
     while True:
         try:
             browser.find_element(By.CSS_SELECTOR, "[data-date='{}']".format(dataDate)).click() #select date 
@@ -336,21 +351,16 @@ def fillMissingCurtail(curtail_read): #since curtailment data is published with 
     with shelve.open(str(shelf)) as s:
         ct_latestDate = s['caiso']['ct_latestDate']
         ct_latestDate_dt = datetime.strptime(ct_latestDate, '%Y-%m-%d %H:%M:%S')
-    ct_date = curtail_read['date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) #parse times from each row of data
-    curtail_read['date'] = ct_date.apply(lambda x: datetime.strftime(x, '%m/%d/%Y')) #set date for each row
-    curtail_read['date'].astype(str) #convert to string
-    curtail_read['interval'].astype(str) #convert to string
     df_dataFile = pd.read_csv(dataFile, dtype=dataFile_dtypes)
     nulls = df_dataFile[['wind_curtail_MW','solar_curtail_MW']].isnull().any(axis=1) #figure out which rows contain NaNs (which should be only missing curtailment data)
     overwrite_index = nulls[nulls==True].index[0] #note the row number of the first missing curtailment data in the dataFile
     df_prevmonth = df_dataFile[df_dataFile.isnull().any(axis=1)] #extract rows with NaN to new dataframe
     prevmonth_date_dt = df_prevmonth['date'].apply(lambda x: datetime.strptime(x, '%m/%d/%Y'))
-    df_prevmonth.drop(df_prevmonth[prevmonth_date_dt > ct_latestDate_dt].index, inplace=True) #remove rows with date greater than available in curtailFile
+    df_prevmonth = df_prevmonth.drop(df_prevmonth[prevmonth_date_dt > ct_latestDate_dt].index) #remove rows with date greater than available in curtailFile
     df_prevmonth.drop(['wind_curtail_MW','solar_curtail_MW'], axis=1, inplace=True) #delete last two columns
     #re-merge new curtailment data
-    df_prevmonth['date'].astype(str) #convert to string
-    df_prevmonth['hour'].astype(np.uint8) #convert to uint8
-    df_prevmonth['interval'].astype(np.uint8) #convert to uint8
+    df_prevmonth.astype({'date':str,'hour':'uint8','interval':'uint8'}, copy=False)
+    print(curtail_read.head()) ###
     df_prevmonth_ct = pd.merge(df_prevmonth, curtail_read, on=['date', 'hour', 'interval'], how='left', left_index=True) #merge curtailment data with prevmonth dataframe
     df_prevmonth_ct.fillna(0, inplace=True) #fill all empty values with '0'
     #merge prevmonth data into df_dataFile
@@ -362,10 +372,11 @@ def fillMissingCurtail(curtail_read): #since curtailment data is published with 
     df_prevmonth_ct.set_index('index', inplace=True) #set index to index
     df_dataFile.update(df_prevmonth_ct)
     #overwrite dataFile (csv) with updated df_dataFile
-    with open(dataFile,'w') as f:    
+    with open(dataFile,'w', newline='') as f:    
         df_dataFile.to_csv(f, header=True, index=False)
 
-def copyData(latestDate_dt): #clean up data from downloaded CSVs, merge into a single dataframe
+
+def copyData(latestDate_dt, curtail_df): #clean up data from downloaded CSVs, merge into a single dataframe
     files = os.listdir(downloads)
     #emissions data
     co2_read = pd.read_csv(downloads / files[0]) ##need to update to dynamically match filename
@@ -421,21 +432,14 @@ def copyData(latestDate_dt): #clean up data from downloaded CSVs, merge into a s
     intervalMap = {'00': '1', '05': '2', '10': '3', '15': '4', '20': '5', '25': '6', '30': '7', '35': '8', '40': '9', '45': '10', '50': '11', '55': '12'} #12 intervals per hour
     df_ts['interval'].replace(intervalMap, inplace=True) #replace 5-min values with interval values
     #curtailment data
-    curtail_read = pd.read_csv(curtailments / 'curtailment_data.csv', dtype=ct_dtypes) #load the csv into a dataframe
-    curtail_read.columns = (['date','hour', 'interval','wind_curtail_MW','solar_curtail_MW']) #rename columns
     with shelve.open(str(shelf)) as s:
         ct_latestDate = s['caiso']['ct_latestDate']
     ct_latestDate_dt = datetime.strptime(ct_latestDate, '%Y-%m-%d %H:%M:%S')
     if ct_latestDate_dt > latestDate_dt: #if the curtailment file contains curtailment data for the date of the supply/emissions data just downloaded
-        ct_date = curtail_read['date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) #parse times from each row of data
-        curtail_read['date'] = ct_date.apply(lambda x: datetime.strftime(x, '%m/%d/%Y')) #set date for each row
-        curtail_read['date'].astype(str) #convert to string
-        curtail_read['hour'].astype(str) #convert to string
-        curtail_read['interval'].astype(str) #convert to string
-        df_ts['date'].astype(str) #convert to string
-        df_ts['hour'].astype(str) #convert to str
-        df_ts['interval'].astype(str) #convert to string
-        df_curtail = pd.merge(df_ts, curtail_read, on=['date', 'hour', 'interval'], how='left', left_index=True) #merge curtailment data with timestamp dataframe
+        df_ts.astype({'hour':np.uint8,'interval':np.uint8})
+        df_ts['hour'] = pd.to_numeric(df_ts['hour'],downcast='unsigned')
+        df_ts['interval'] = pd.to_numeric(df_ts['interval'],downcast='unsigned')
+        df_curtail = pd.merge(df_ts, curtail_df, on=['date', 'hour', 'interval'], how='left', left_index=True) #merge curtailment data with timestamp dataframe
         df_curtail.fillna(0, inplace=True) #fill all empty values with '0'
         df_curtail.drop(['date', 'month', 'day', 'weekday', 'hour', 'interval'], axis=1, inplace=True) #get rid of all columns except for data
         df_curtail.reset_index(drop=True, inplace=True)
@@ -446,7 +450,7 @@ def copyData(latestDate_dt): #clean up data from downloaded CSVs, merge into a s
     #merge dataframes
     data_frames = [df_ts, df_demand, df_netdemand, df_curtail, df_renew, df_supply, df_co2] #list of dataframes to merge
     df_merged = reduce(lambda left,right: pd.merge(left,right,left_index=True,right_index=True), data_frames) #merge the dateframes
-    with open(dataFile,'a') as f:    #append dataframe to dataFile CSV
+    with open(dataFile,'a', newline='') as f:    #append dataframe to dataFile CSV
         if os.stat(dataFile).st_size == 0: #if dataFile empty, header=True, otherwise header=False
             df_merged.to_csv(f, header=True, index=False)
         else:
@@ -456,3 +460,5 @@ def copyData(latestDate_dt): #clean up data from downloaded CSVs, merge into a s
 
 if __name__== "__main__":
     main()
+
+#%%
