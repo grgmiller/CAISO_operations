@@ -13,4 +13,8 @@ Date		Version		Description of updates
 				Removed global references
 				Remove unnecessary time.sleeps()
 1/21/19		3.0.3		Fixed chained indexing error / SettingWithCopyWarning in fillMissingCurtail() function, updated object dtypes to category when reading csv
+8/5/19		3.0.4		Fixed selenium ElementNotClickable error by scrolling viewport to chart when downloading
+				Fixed issue where to_csv was writing in a space between each line
+				Fixed issue where existing curtailment data was not successfully merging with downloaded data
+4/13/20		3.0.5		Updated code to reflect new data locations on CAISO's website
 		
